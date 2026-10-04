@@ -1,0 +1,43 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#141210;font-family:"PingFang SC",sans-serif}
+canvas{position:absolute;inset:0}</style></head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// 名画聚光：整幅画 → 依次推近并点亮几个局部，配标签。
+// 参数：img=file:///…  regions=x,y,w,h,标题,副标题;…（比例 0-1）  dur  hold=每个局部停留占比
+const Q=new URLSearchParams(location.search), DUR=parseFloat(Q.get("dur")||"14");
+const REG=(Q.get("regions")||"").split(";").filter(Boolean).map(r=>{const [x,y,w,h,t,s]=r.split(","); return {x:+x,y:+y,w:+w,h:+h,t:t||"",s:s||""};});
+const g=document.getElementById("c").getContext("2d");
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2, lerp=(a,b,t)=>a+(b-a)*t;
+const im=new Image(); im.onload=()=>{window.ready=true;}; im.src=Q.get("img");
+function fitRect(rx,ry,rw,rh){ // 画面上要显示的画区域（比例）→ 源图像素框，保持 16:9
+  const W=im.width,H=im.height; let w=rw*W,h=rh*H; const cx=(rx+rw/2)*W, cy=(ry+rh/2)*H;
+  if(w/h<16/9) w=h*16/9; else h=w*9/16;
+  return {x:cx-w/2,y:cy-h/2,w,h};
+}
+function label(t,sub,x,y,a){ if(a<=0||!t) return; g.save(); g.globalAlpha=a; g.fillStyle="rgba(20,17,14,.82)";
+  g.font="700 44px PingFang SC"; const w=Math.max(g.measureText(t).width, sub?g.measureText(sub).width*0.65:0)+64;
+  g.beginPath(); g.roundRect(x,y,w,sub?124:80,12); g.fill(); g.fillStyle="#d9a93a"; g.fillRect(x,y,6,sub?124:80);
+  g.fillStyle="#fff8ea"; g.fillText(t,x+30,y+56); if(sub){ g.font="500 28px PingFang SC"; g.fillStyle="#e6d2a6"; g.fillText(sub,x+30,y+100);} g.restore(); }
+window.renderAt=function(t){
+  const u=clamp(t/DUR); g.fillStyle="#141210"; g.fillRect(0,0,1920,1080);
+  const full={x:0,y:0,w:1,h:1}; const stops=[full,...REG]; const N=stops.length;
+  // 时间：0-0.15 全图，然后每个局部均分，最后 0.1 回到全图
+  let seg, f;
+  if(u<0.15){ seg=0; f=u/0.15; }
+  else if(u>0.9){ seg=N; f=(u-0.9)/0.1; }
+  else { const k=(u-0.15)/0.75*REG.length; seg=1+Math.floor(k); f=k-Math.floor(k); }
+  const from = seg===0? full : (seg>REG.length? REG[REG.length-1] : (seg===1? full : REG[seg-2]));
+  const to   = seg===0? full : (seg>REG.length? full : REG[seg-1]);
+  const e=ease(clamp(f/0.45));                              // 前 45% 时间推镜，其余停留
+  const A=fitRect(from.x,from.y,from.w,from.h), B=fitRect(to.x,to.y,to.w,to.h);
+  const R={x:lerp(A.x,B.x,e),y:lerp(A.y,B.y,e),w:lerp(A.w,B.w,e),h:lerp(A.h,B.h,e)};
+  const zoomAll = seg===0 ? 1+0.04*u/0.15 : 1;
+  g.drawImage(im, R.x, R.y, R.w, R.h, 0,0,1920,1080);
+  if(seg>=1 && seg<=REG.length && e>=1){ const r=REG[seg-1]; // 高亮框 + 标签
+    const a=clamp((f-0.45)/0.15); const sx=1920/R.w, sy=1080/R.h; const x=(r.x*im.width-R.x)*sx, y=(r.y*im.height-R.y)*sy, w=r.w*im.width*sx, h=r.h*im.height*sy;
+    g.save(); g.globalAlpha=a; g.strokeStyle="#d9a93a"; g.lineWidth=5; g.setLineDash([22,14]); g.strokeRect(x,y,w,h); g.restore();
+    label(r.t, r.s, 90, 90, a); }
+  return true;
+};
+</script></body></html>

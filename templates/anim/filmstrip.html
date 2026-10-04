@@ -1,0 +1,33 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#efe6d6}canvas{position:absolute;inset:0}
+#vign{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 45%,rgba(0,0,0,0) 55%,rgba(60,40,20,.3) 100%)}</style></head><body>
+<canvas id="c" width="1920" height="1080"></canvas><div id="vign"></div>
+<script>
+// 胶卷连环画：一组图做成一条胶卷，几幅一组地停住看，组与组之间快速往左拉一下。
+// 不要匀速滚动：30 帧下细节多的画面匀速横移会糊、会跳；「停住看 → 快拉 → 停住看」才看得清。
+// 参数：imgs=a.jpg,b.jpg,…（相对本页面的路径或 file:// 地址）  group=每组几幅(4)  dur=秒  fh=画格高(560)
+//       title=左上角卡片文字  credit=右上角小字（如「画面：AI 生成」——AI 生成的画面要标明）
+// 每组停留 = (dur − 0.35 − (组数−1)×0.7) / 组数；想每组看 3 秒，三组就给 dur≈10.8。
+const Q=new URLSearchParams(location.search), DUR=parseFloat(Q.get("dur")||"10"), g=document.getElementById("c").getContext("2d"), W=1920, H=1080;
+const SRC=(Q.get("imgs")||"").split(",").filter(Boolean), N=SRC.length, GRP=parseInt(Q.get("group")||"4"), NG=Math.max(1,Math.ceil(N/GRP));
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), ramp=(t,a,b)=>clamp((t-a)/(b-a)), ez=u=>u<.5?4*u*u*u:1-Math.pow(-2*u+2,3)/2;
+const IM=[], FH=parseFloat(Q.get("fh")||"560"), GAP=22, GGAP=280, MOVE=.7, BH=FH+110, BY=Math.round((1080-BH)/2)-10, Y0=BY+55; let XS=[], STOP=[];
+const TITLE=Q.get("title")||"", CREDIT=Q.get("credit")||"";
+window.renderAt=function(t){ t=Math.min(t,DUR); g.fillStyle="#efe6d6"; g.fillRect(0,0,W,H);
+  const hold=(DUR-.35-(NG-1)*MOVE)/NG;
+  let X=STOP[0]; for(let k=1;k<NG;k++){ const ts=k*hold+(k-1)*MOVE; X+=(STOP[k]-STOP[k-1])*ez(ramp(t,ts,ts+MOVE)); }
+  g.fillStyle="#1b1511"; g.fillRect(-10,BY,W+20,BH);                                   // 胶片带 + 齿孔
+  g.fillStyle="#efe6d6"; const off=((X%64)+64)%64; for(let x=off-64;x<W+64;x+=64){ for(const y of [BY+18,BY+BH-40]){ g.beginPath(); g.roundRect(x,y,34,22,6); g.fill(); } }
+  IM.forEach((im,i)=>{ const w=im.width*FH/im.height, x=X+XS[i]; if(x>W||x+w<0) return; g.drawImage(im,x,Y0,w,FH); g.strokeStyle="rgba(239,230,214,.9)"; g.lineWidth=3; g.strokeRect(x+1.5,Y0+1.5,w-3,FH-3); });
+  const a=Math.min(ramp(t,.3,.8),1-ramp(t,DUR-.5,DUR-.1));
+  g.save(); g.globalAlpha=a; g.font='700 44px "PingFang SC","Noto Sans CJK SC",sans-serif';
+  if(TITLE){ const tw=g.measureText(TITLE).width; g.shadowColor="rgba(60,40,20,.2)"; g.shadowBlur=24; g.fillStyle="rgba(255,250,240,.95)"; g.beginPath(); g.roundRect(110,BY-112,tw+62,82,14); g.fill();
+    g.shadowBlur=0; g.fillStyle="#a8472a"; g.fillRect(110,BY-112,7,82); g.fillStyle="#2a2118"; g.fillText(TITLE,144,BY-56); }
+  if(CREDIT){ g.font='500 28px "PingFang SC","Noto Sans CJK SC",sans-serif'; g.fillStyle="#6b5a45"; g.textAlign="right"; g.fillText(CREDIT,W-110,BY-58); }
+  g.restore();
+  const f=Math.min(ramp(t,0,.4),1-ramp(t,DUR-.35,DUR)); if(f<1){ g.fillStyle=`rgba(239,230,214,${1-f})`; g.fillRect(0,0,W,H); } };
+Promise.all(SRC.map((s,i)=>new Promise(r=>{const im=new Image(); im.onload=()=>{IM[i]=im; r();}; im.onerror=()=>{console.error("图片加载失败",s); r();}; im.src=s;}))).then(()=>{
+  let x=0; IM.forEach((im,i)=>{ if(i&&i%GRP===0) x+=GGAP-GAP; XS.push(x); x+=im.width*FH/im.height+GAP; });
+  for(let k=0;k<NG;k++){ const a=XS[GRP*k], li=Math.min(GRP*k+GRP-1,N-1), last=IM[li], b=XS[li]+last.width*FH/last.height; STOP.push(960-(a+b)/2); }   // 每组居中停住
+  window.renderAt(0); window.ready=true; });
+</script></body></html>

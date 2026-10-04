@@ -1,0 +1,111 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#efe6d6;font-family:"PingFang SC","Heiti SC","Noto Sans CJK SC",sans-serif}
+#c,#o{position:absolute;inset:0}
+#vign{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 42%,rgba(0,0,0,0) 52%,rgba(60,40,20,.30) 100%)}
+.lab{position:absolute;opacity:0;color:#2a2118;font-size:46px;font-weight:700;letter-spacing:3px;background:rgba(255,250,240,.93);padding:14px 28px 16px;
+  border-radius:14px;box-shadow:0 8px 30px rgba(60,40,20,.2);border-left:7px solid #a8472a;white-space:nowrap}
+.lab small{display:block;font-size:28px;font-weight:500;color:#6b5a45;letter-spacing:2px;margin-top:6px}
+.num{position:absolute;opacity:0;color:#2a2118;font-weight:700;font-size:150px;letter-spacing:2px;white-space:nowrap;line-height:1}
+.num i{font-style:normal;font-size:56px;color:#a8472a;margin-left:14px}
+.num small{display:block;font-size:32px;font-weight:500;color:#6b5a45;margin-top:10px;letter-spacing:3px}
+#fade{position:absolute;inset:0;background:#efe6d6;opacity:0}
+</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+</head><body>
+<canvas id="c" width="1920" height="1080"></canvas><div id="vign"></div><canvas id="o" width="1920" height="1080"></canvas><div id="labels"></div><div id="fade"></div>
+<script type="module">
+// 三维示意动画模板（three.js，逐帧确定）。画风：羊皮纸底 + 暗角、实体着色模型（真实材质色、有阴影）、圆角奶油卡片配红色左条、墨色引线。
+// 用法：复制到 <ep>/anim/，把 build() 换成你的对象，在 S 里写场景；capture.py 逐帧截图。
+// 参数：scene=turn|cut  dur=秒  c1..c4=提示点（秒，取自配音对齐，见 shotlib.anim）  glb=模型路径（可选，需 capture.py --http）
+// 约定：window.ready=true 表示可以截图；window.renderAt(t) 只依赖 t（不用 Date/requestAnimationFrame/随机数），同一个 t 画出同一帧。
+import * as THREE from "three";
+const Q=new URLSearchParams(location.search), DUR=parseFloat(Q.get("dur")||"10"), SC=Q.get("scene")||"turn";
+const cue=(k,d)=>Q.has(k)?parseFloat(Q.get(k)):d;
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), lerp=(a,b,u)=>a+(b-a)*u, TAU=Math.PI*2;
+const ease=t=>{t=clamp(t);return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;}, ramp=(t,a,b)=>clamp((t-a)/(b-a)), er=(t,a,b)=>ease(ramp(t,a,b));
+const W=1920,H=1080, og=document.getElementById("o").getContext("2d");
+
+// ── 渲染器、灯光、材质
+const renderer=new THREE.WebGLRenderer({canvas:document.getElementById("c"),antialias:true,preserveDrawingBuffer:true,alpha:true});
+renderer.setPixelRatio(1); renderer.setSize(W,H,false); renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.05;
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+const scene=new THREE.Scene(); scene.background=null;                      // 背景透明：底色和暗角交给 CSS
+const cam=new THREE.PerspectiveCamera(28,W/H,1,3000);
+scene.add(new THREE.HemisphereLight(0xfff4e0,0x8a7560,.95));
+const key=new THREE.DirectionalLight(0xffe2b8,2.3); key.position.set(-120,230,150); key.castShadow=true; key.shadow.mapSize.set(2048,2048);
+Object.assign(key.shadow.camera,{left:-120,right:120,top:140,bottom:-40,near:10,far:700}); key.shadow.bias=-0.0006; key.shadow.normalBias=.6; scene.add(key);
+const rim=new THREE.DirectionalLight(0xdfe8ff,.35); rim.position.set(160,90,-170); scene.add(rim);
+const stone=(c,r=.82)=>new THREE.MeshStandardMaterial({color:c,roughness:r,side:THREE.DoubleSide});
+const M={ light:stone(0xefe7d6), mid:stone(0xddd0b6), dark:stone(0xcdbd9f,.7), cut:stone(0xc57f58,.95), inner:stone(0xe2b877,.8),
+  lead:new THREE.MeshStandardMaterial({color:0x9fb0b8,roughness:.55,metalness:.15,side:THREE.DoubleSide}), hole:stone(0x3a2a1c,1),
+  floor:new THREE.ShadowMaterial({color:0x3c2814,opacity:.28}) };
+// 只接阴影的地面。别和模型的底面/台面放在同一高度：共面会让阴影一块一块地闪——往下错开一点。
+const FLOOR=new THREE.Mesh(new THREE.CircleGeometry(900,64),M.floor); FLOOR.rotation.x=-Math.PI/2; FLOOR.position.y=-0.05; FLOOR.receiveShadow=true; scene.add(FLOOR);
+const sh=m=>{m.castShadow=true; m.receiveShadow=true; return m;};
+
+// ── 建模工具
+// 旋转体：闭合剖面 pts=[[半径,高],…]；给了 phi0/len 就开一个口，并补两片剖切面（这样「剖开看里面」不用布尔运算）
+function lathe(pts,mat,phi0=0,len=TAU,capMat=M.cut,seg=96){ const grp=new THREE.Group();
+  const v=pts.map(([r,y])=>new THREE.Vector2(Math.max(r,0.001),y)); v.push(v[0].clone());
+  grp.add(sh(new THREE.Mesh(new THREE.LatheGeometry(v,Math.max(8,Math.round(seg*len/TAU)),phi0,len),mat)));
+  if(len<TAU-1e-3){ const gs=new THREE.ShapeGeometry(new THREE.Shape(pts.map(([r,y])=>new THREE.Vector2(r,y))));
+    for(const ph of [phi0,phi0+len]){ const c=new THREE.Mesh(gs,capMat); c.rotation.y=ph-Math.PI/2; c.receiveShadow=true; grp.add(c);} }
+  return grp; }
+const arc=(R,th,y0,n=28)=>{const a=[]; for(let i=0;i<=n;i++){const u=i/n*Math.PI/2; a.push([R*Math.cos(u),y0+R*Math.sin(u)]);} for(let i=n;i>=0;i--){const u=i/n*Math.PI/2; a.push([(R-th)*Math.cos(u),y0+(R-th)*Math.sin(u)]);} return a;};
+const pol=(r,y,phi)=>new THREE.Vector3(r*Math.sin(phi),y,r*Math.cos(phi));
+
+// ── 示例对象：圆形鼓座 + 双层壳穹顶 + 采光亭（单位：米）。换成你的对象时保留「真实尺寸建模」——标尺和对比才有意义。
+const R=20, Y_DRUM=18, TH_OUT=1.2, TH_IN=1.0;
+function build(open=0){ const G=new THREE.Group(), len=TAU-open;                          // open = 切口张角（弧度），切口朝 +z
+  G.add(lathe([[R+2.4,0],[R+2.4,Y_DRUM],[R-1.5,Y_DRUM],[R-1.5,0]],M.mid,open/2,len));                  // 鼓座（墙）
+  G.add(lathe(arc(R+2.2,TH_OUT,Y_DRUM),M.lead,open/2,len));                                            // 外壳
+  G.add(lathe(arc(R-1.2,TH_IN,Y_DRUM),M.inner,open/2,len));                                            // 内壳
+  for(let i=0;i<16;i++){ const ph=i/16*TAU; if(open && Math.abs(((ph+Math.PI)%TAU)-Math.PI)<open/2) continue;        // 成对的壁柱 + 窗洞
+    const p=sh(new THREE.Mesh(new THREE.BoxGeometry(1.6,Y_DRUM-2,1.2),M.light)); p.position.copy(pol(R+2.9,(Y_DRUM-2)/2,ph)); p.rotation.y=ph; G.add(p);
+    const w=new THREE.Mesh(new THREE.BoxGeometry(2.6,5,.5),M.hole); w.position.copy(pol(R+2.45,Y_DRUM*.55,ph+TAU/32)); w.rotation.y=ph+TAU/32; G.add(w); }
+  const lan=sh(new THREE.Mesh(new THREE.CylinderGeometry(2.2,2.6,6,24),M.light)); lan.position.y=Y_DRUM+R+2.2+3; G.add(lan);                    // 采光亭
+  const cap=sh(new THREE.Mesh(new THREE.ConeGeometry(2.8,3.2,24),M.lead)); cap.position.y=Y_DRUM+R+2.2+7.6; G.add(cap);
+  return G; }
+let model=null; const useModel=open=>{ if(model) scene.remove(model); model=build(open); scene.add(model); model.userData.open=open; return model; };
+function person(x,z){ const p=new THREE.Group(), b=sh(new THREE.Mesh(new THREE.CylinderGeometry(.28,.34,1.25,8),M.hole)); b.position.y=.62;       // 1.75 米的人：一切尺度感的参照
+  const h=sh(new THREE.Mesh(new THREE.SphereGeometry(.25,10,8),M.hole)); h.position.y=1.5; p.add(b,h); p.position.set(x,0,z); scene.add(p); return p; }
+person(R+8,6);
+
+// ── 相机、投影、二维叠层（引线和尺寸线画在 #o 上，文字用 DOM——字体渲染比 canvas 清晰）
+let view={A:0,el:.2,D:150,tx:0,ty:20,tz:0};
+function setCam(){ const ce=Math.cos(view.el); cam.position.set(view.tx+view.D*Math.sin(view.A)*ce, view.ty+view.D*Math.sin(view.el), view.tz+view.D*Math.cos(view.A)*ce);
+  cam.lookAt(view.tx,view.ty,view.tz); cam.updateProjectionMatrix(); cam.updateMatrixWorld(); }
+const proj=v=>{const p=v.clone().project(cam); return [(p.x+1)/2*W,(1-p.y)/2*H];};
+const LAB={}; function label(id,html,x,y,a){ let e=LAB[id]; if(!e){ e=LAB[id]=document.createElement("div"); document.getElementById("labels").appendChild(e); }
+  e.className=id[0]==="#"?"num":"lab"; if(e._h!==html){e.innerHTML=html; e._h=html;} e.style.left=x+"px"; e.style.top=y+"px"; e.style.opacity=clamp(a); return e; }
+// 注意：无头浏览器软件渲染下，大量带 shadowBlur 的描边会让截图整张空白——要发光效果就多描几遍不同粗细的线
+function oline(pts,col,w,a=1,dash=null){ if(a<=0||pts.length<2) return; og.save(); og.globalAlpha=clamp(a); og.strokeStyle=col; og.lineWidth=w; og.lineCap="round"; og.lineJoin="round";
+  if(dash) og.setLineDash(dash); og.beginPath(); pts.forEach((p,i)=>i?og.lineTo(p[0],p[1]):og.moveTo(p[0],p[1])); og.stroke(); og.restore(); }
+function leader(p,x,y,a,col="#2a2118"){ if(a<=0) return; oline([p,[lerp(p[0],x,clamp(a*1.5)),lerp(p[1],y,clamp(a*1.5))]],col,3,a); og.save(); og.globalAlpha=clamp(a); og.fillStyle=col; og.beginPath(); og.arc(p[0],p[1],7,0,TAU); og.fill(); og.restore(); }
+function dim(a,b,txt,k,col="#a8472a"){ if(k<=0) return; const A=proj(a), B=proj(b), E=[lerp(A[0],B[0],ease(k)),lerp(A[1],B[1],ease(k))]; oline([A,E],col,5,1);     // 尺寸线：从一端画到另一端
+  og.save(); og.globalAlpha=clamp(k*2-1); og.fillStyle=col; og.font='700 44px "PingFang SC","Noto Sans CJK SC",sans-serif'; og.fillText(txt,(A[0]+B[0])/2+18,(A[1]+B[1])/2-14); og.restore(); }
+
+// ── 场景：每个场景是 t 的纯函数。动作幅度小、用缓动；一个场景只讲一件事；标签在口播说到时出现（c1…）。
+const S={};
+S.turn=t=>{ if(!model||model.userData.open!==0) useModel(0);                    // 缓慢环绕 + 两个标签
+  const c1=cue("c1",DUR*.3), c2=cue("c2",DUR*.6);
+  view={A:lerp(.5,1.4,ease(t/DUR)),el:lerp(.24,.18,t/DUR),D:lerp(165,150,ease(t/DUR)),tx:0,ty:22,tz:0}; setCam();
+  const p=proj(pol(R+2.2,Y_DRUM+12,view.A-.5)); leader(p,1290,300,er(t,c1,c1+.5)); label("a","外壳<small>铅皮覆面</small>",1300,240,er(t,c1+.2,c1+.6));
+  const q=proj(pol(R+2.4,Y_DRUM*.5,view.A+.4)); leader(q,330,760,er(t,c2,c2+.5)); label("b","鼓座<small>十六扇窗</small>",140,760,er(t,c2+.2,c2+.6)); };
+S.cut=t=>{ const c1=cue("c1",DUR*.25), c2=cue("c2",DUR*.6);                     // 剖开：切口从 0 张到 110°，再量内径
+  const open=lerp(0,1.92,er(t,c1,c1+1.6)), q=Math.round(open*24)/24; if(!model||model.userData.open!==q) useModel(q);
+  view={A:lerp(.25,.0,ease(t/DUR)),el:.2,D:lerp(160,140,ease(t/DUR)),tx:0,ty:22,tz:0}; setCam();
+  label("a","两层壳<small>中间夹着一条通道</small>",150,220,er(t,c1+1.2,c1+1.7));
+  dim(new THREE.Vector3(-(R-2.2),Y_DRUM,0),new THREE.Vector3(R-2.2,Y_DRUM,0),"",er(t,c2,c2+1.0)); label("#n",`${(2*(R-2.2)).toFixed(1)}<i>米</i><small>内径</small>`,150,430,er(t,c2+.6,c2+1.1)); };
+
+window.renderAt=function(t){ t=Math.min(t,DUR); og.clearRect(0,0,W,H); Object.values(LAB).forEach(e=>e.style.opacity=0); (S[SC]||S.turn)(t); renderer.render(scene,cam);
+  document.getElementById("fade").style.opacity=1-Math.min(er(t,0,.5),1-er(t,DUR-.45,DUR)); return true; };
+// 可选：加载 glb 实物模型代替示例对象（真扫描优先；重塑模型只用于整体/路线/环绕，细节用实拍照片嵌进来）
+const jobs=[document.fonts.ready];
+if(Q.get("glb")) jobs.push(import("three/addons/loaders/GLTFLoader.js").then(m=>new Promise((res,rej)=>new m.GLTFLoader().load(Q.get("glb"),g=>{ const o=g.scene;
+  const box=new THREE.Box3().setFromObject(o), s=40/Math.max(...box.getSize(new THREE.Vector3()).toArray()); o.scale.setScalar(s);
+  const b2=new THREE.Box3().setFromObject(o), c=b2.getCenter(new THREE.Vector3()); o.position.sub(new THREE.Vector3(c.x,b2.min.y,c.z)); o.traverse(x=>{if(x.isMesh) sh(x);});
+  build=()=>o; res(); },undefined,rej))));
+Promise.all(jobs).then(()=>{ window.renderAt(0); window.ready=true; });
+</script></body></html>

@@ -1,0 +1,151 @@
+<!doctype html><html><head><meta charset="utf-8">
+<!--
+geomap.html — 真实地形飞越（MapLibre GL JS 5.24.0（UMD；6.x 只发 ESM+独立 worker，file:// 页面起不了跨源 worker） + 免费栅格底图 + AWS Terrarium 地形）。
+由 URL 参数驱动、暴露 window.renderAt(t)（返回 Promise，等瓦片全部到齐再截图），
+用 scripts/capture.py 逐帧截图（示例：从全国视角飞到一处地标）：
+  python3 scripts/capture.py templates/anim/geomap.html "dur=8&c0=105,35&z0=3.4&c1=116.3972,39.9163&z1=15.6&p1=62&b1=-25&pts=故宫:116.3972:39.9163:@6.4" out.mp4
+
+参数（都可省略）：
+  dur=8           动画总秒数（capture.py 也读这个）
+  c0=lon,lat      起点中心                      c1=lon,lat  终点中心（默认同 c0）
+  z0 p0 b0        起点 zoom / pitch / bearing     z1 p1 b1    终点 zoom / pitch / bearing
+  arrive=0.9      相机在 dur 的几成处到达终点，之后定住（给结尾标签留时间）
+  ease=cubic|sine|linear
+  base=osm|url        底图；url 时用 tiles= 指定 {z}/{x}/{y} 模板（卫星图走这里），attr= 必须写其署名
+  tiles= attr= tilesize=256
+  terrain=1 exag=1.3 hillshade=1      AWS Terrarium 地形 / 夸张倍数 / 山体阴影
+  route=lon,lat;lon,lat;…  或 GeoJSON（LineString / Feature / FeatureCollection）字符串
+  routefile=URL            http(s) 可直接 fetch；本地文件请用 geomap_url.py 内联成 route=
+  rt0=0.35 rt1=0.85        路线逐段画出的起止（占 dur 比例）   rcolor=#a8472a rwidth=7
+  pts=名:lon:lat[:@秒];…   带标签的点，@秒 指淡入时刻（默认 arrive 时）
+  label=标题|副标题        右上角标题卡（arrive 时淡入）
+  attrsize=22              角落署名字号
+
+署名会烧进右下角：OSM 要求可见署名（https://operations.osmfoundation.org/policies/tiles/），
+地形瓦片须按 Tilezen 要求署名（https://github.com/tilezen/joerd/blob/master/docs/attribution.md）。
+-->
+<link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#cfdde2;font-family:"PingFang SC",sans-serif}
+#map{position:absolute;inset:0}
+#ov{position:absolute;inset:0;pointer-events:none}
+#attr{position:absolute;right:16px;bottom:12px;max-width:1700px;text-align:right;color:#1d1a16;background:rgba(255,252,246,.82);
+  padding:7px 14px;border-radius:6px;font-family:"Avenir Next","PingFang SC",sans-serif;font-weight:500;line-height:1.25;white-space:normal}
+.maplibregl-ctrl{display:none}
+</style></head><body>
+<div id="map"></div>
+<canvas id="ov" width="1920" height="1080"></canvas>
+<div id="attr"></div>
+<script>
+const Q=new URLSearchParams(location.search);
+const num=(k,d)=>Q.has(k)&&Q.get(k)!==""?parseFloat(Q.get(k)):d;
+const pair=(k,d)=>(Q.get(k)||d).split(",").map(Number);
+const DUR=num("dur",8), ARRIVE=num("arrive",0.9);
+const C0=pair("c0","10,48"), C1=pair("c1",Q.get("c0")||"10,48");
+const Z0=num("z0",3.4), P0=num("p0",0), B0=num("b0",0);
+const Z1=num("z1",Z0), P1=num("p1",P0), B1=num("b1",B0);
+const BASE=Q.get("base")||"osm", TILESIZE=num("tilesize",256);
+const TERRAIN=Q.get("terrain")!=="0", EXAG=num("exag",1.3), HILL=Q.get("hillshade")!=="0";
+const RT0=num("rt0",0.35), RT1=num("rt1",0.85), RCOLOR=Q.get("rcolor")||"#a8472a", RWIDTH=num("rwidth",7);
+const LABEL=(Q.get("label")||"").split("|");
+const PTS=(Q.get("pts")||"").split(";").filter(Boolean).map(s=>{const [n,lon,lat,at]=s.split(":"); return {n,p:[+lon,+lat],at:at&&at[0]==="@"?parseFloat(at.slice(1)):null};});
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), lerp=(a,b,t)=>a+(b-a)*t;
+const EASES={cubic:t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2, sine:t=>-(Math.cos(Math.PI*t)-1)/2, linear:t=>t};
+const ease=EASES[Q.get("ease")||"cubic"]||EASES.cubic;
+
+// ── 底图预设 ──
+const BASES={
+  osm:{tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],maxzoom:19,attr:"© OpenStreetMap contributors"},
+  // 卫星图没有内置预设：Esri World Imagery 虽然不带密钥也能取到瓦片，但其条款要求“配合 Esri 软件使用，
+  // 否则须购买 ArcGIS Online 订阅”，且禁止批量抓取/再分发（https://goto.arcgis.com/termsofuse/viewsummary）。
+  // 有订阅时这样用：base=url&tiles=https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+  //                 &attr=Imagery: Esri, Vantor, Earthstar Geographics, and the GIS User Community
+  url:{tiles:[Q.get("tiles")||""],maxzoom:num("maxzoom",19),attr:Q.get("attr")||"(tile attribution missing)"},
+};
+const B=BASES[BASE]||BASES.osm;
+const TERRAIN_ATTR="Terrain: Mapzen/AWS Terrain Tiles (SRTM & GMTED2010 © USGS · EU-DEM © EU Copernicus · ETOPO1 © NOAA)";
+let attrText=(BASE==="url"?B.attr:(Q.get("attr")?B.attr+" · "+Q.get("attr"):B.attr));
+if(TERRAIN) attrText+="  ·  "+TERRAIN_ATTR;
+const attrEl=document.getElementById("attr"); attrEl.textContent=attrText; attrEl.style.fontSize=num("attrsize",22)+"px";
+
+const style={version:8,
+  sources:{base:{type:"raster",tiles:B.tiles,tileSize:TILESIZE,maxzoom:B.maxzoom,attribution:attrText},
+           route:{type:"geojson",data:{type:"FeatureCollection",features:[]}}},
+  layers:[{id:"bg",type:"background",paint:{"background-color":"#cfdde2"}},
+          {id:"base",type:"raster",source:"base",paint:{"raster-fade-duration":0}},
+          {id:"route-casing",type:"line",source:"route",layout:{"line-cap":"round","line-join":"round"},paint:{"line-color":"rgba(255,250,240,.9)","line-width":RWIDTH+6}},
+          {id:"route",type:"line",source:"route",layout:{"line-cap":"round","line-join":"round"},paint:{"line-color":RCOLOR,"line-width":RWIDTH}}],
+  sky:{"sky-color":"#8fb3d9","horizon-color":"#e6edf2","fog-color":"#dfe7ea","sky-horizon-blend":0.6,"horizon-fog-blend":0.75,"fog-ground-blend":0.55}};
+if(TERRAIN){
+  style.sources.dem={type:"raster-dem",tiles:["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],encoding:"terrarium",tileSize:256,maxzoom:15};
+  style.sources.dem2=Object.assign({},style.sources.dem);     // 山体阴影与 3D 地形分用两个源（MapLibre 建议）
+  if(HILL) style.layers.splice(2,0,{id:"hill",type:"hillshade",source:"dem2",paint:{"hillshade-exaggeration":0.35,"hillshade-shadow-color":"#3a3028","hillshade-highlight-color":"#fff8ea"}});
+  style.terrain={source:"dem",exaggeration:EXAG};
+}
+const map=new maplibregl.Map({container:"map",style,center:C0,zoom:Z0,pitch:P0,bearing:B0,interactive:false,attributionControl:false,
+  fadeDuration:0,preserveDrawingBuffer:true,pixelRatio:1,maxPitch:85,antialias:false,renderWorldCopies:true,maxTileCacheSize:4096});
+
+// ── 路线 ──
+let ROUTE=[], CUM=[0];
+function parseRoute(s){ if(!s) return []; s=s.trim();
+  if(s[0]==="{"){ const j=JSON.parse(s); const f=j.type==="FeatureCollection"?j.features[0]:j; const g=f.type==="Feature"?f.geometry:f;
+    return g.type==="MultiLineString"?g.coordinates.flat():g.coordinates; }
+  return s.split(";").filter(Boolean).map(x=>x.split(",").map(Number)); }
+const hav=(a,b)=>{const R=6371000,toR=Math.PI/180,dl=(b[1]-a[1])*toR,dn=(b[0]-a[0])*toR,h=Math.sin(dl/2)**2+Math.cos(a[1]*toR)*Math.cos(b[1]*toR)*Math.sin(dn/2)**2; return 2*R*Math.asin(Math.sqrt(h));};
+function setRoute(c){ ROUTE=c; CUM=[0]; for(let i=1;i<c.length;i++) CUM.push(CUM[i-1]+hav(c[i-1],c[i])); }
+function partial(f){ if(ROUTE.length<2||f<=0) return []; const L=CUM[CUM.length-1]*f; const out=[ROUTE[0]];
+  for(let i=1;i<ROUTE.length;i++){ if(CUM[i]<=L){ out.push(ROUTE[i]); continue; } const s=(L-CUM[i-1])/(CUM[i]-CUM[i-1]); out.push([lerp(ROUTE[i-1][0],ROUTE[i][0],s),lerp(ROUTE[i-1][1],ROUTE[i][1],s)]); break; }
+  return out; }
+
+// ── 相机路径：van Wijk & Nuij（与 MapLibre flyTo 同一套公式），在进度 k∈[0,1] 上确定性求值 ──
+const W=1920,H=1080;
+const proj=(ll,z)=>{const s=512*Math.pow(2,z)/360, lat=clamp(ll[1],-85.051,85.051)*Math.PI/180; return [(ll[0]+180)*s, (180-180/Math.PI*Math.log(Math.tan(Math.PI/4+lat/2)))*s];};
+const unproj=(px,z)=>{const s=512*Math.pow(2,z)/360; return [px[0]/s-180, 180/Math.PI*(2*Math.atan(Math.exp((180-px[1]/s)*Math.PI/180))-Math.PI/2)];};
+const from=proj(C0,Z0), to=proj(C1,Z0), dx=to[0]-from[0], dy=to[1]-from[1], u1=Math.hypot(dx,dy);
+const rho=1.42, w0=Math.max(W,H), w1=w0/Math.pow(2,Z1-Z0);
+let wFn,uFn,S;
+if(u1<1e-6){ const k=w1<w0?-1:1; S=Math.abs(Math.log(w1/w0))/rho; wFn=s=>Math.exp(k*rho*s); uFn=()=>0; }
+else{ const r=i=>{const b=(w1*w1-w0*w0+(i?-1:1)*rho**4*u1*u1)/(2*(i?w1:w0)*rho*rho*u1); return Math.log(Math.sqrt(b*b+1)-b);};
+  const r0=r(0); S=(r(1)-r0)/rho; wFn=s=>Math.cosh(r0)/Math.cosh(r0+rho*s); uFn=s=>w0*((Math.cosh(r0)*Math.tanh(r0+rho*s)-Math.sinh(r0))/rho**2)/u1; }
+function camera(k){ const s=k*S, w=wFn(s), u=uFn(s);
+  return {center:unproj([from[0]+dx*u, from[1]+dy*u],Z0), zoom:Z0+Math.log2(1/w), pitch:lerp(P0,P1,k), bearing:lerp(B0,B1,k)}; }
+
+// ── 每帧等到瓦片/地形全部到位 ──
+function settle(ms=25000){ return new Promise(res=>{ let done=false; const fin=()=>{ if(done) return; done=true; clearTimeout(to); res(); };
+  const to=setTimeout(fin,ms); map.once("idle",fin); map.triggerRepaint(); }); }
+
+// ── 叠层：点标签 + 标题卡 ──
+const g=document.getElementById("ov").getContext("2d");
+function card(t,sub,x,y,a){ if(a<=0) return; g.save(); g.globalAlpha=a; g.fillStyle="rgba(255,250,240,.93)";
+  g.shadowColor="rgba(60,40,20,.25)"; g.shadowBlur=24; g.beginPath(); g.roundRect(x,y,600,124,14); g.fill(); g.shadowBlur=0;
+  g.fillStyle="#a8472a"; g.fillRect(x,y,6,124); g.fillStyle="#2a2118"; g.font="700 44px PingFang SC"; g.fillText(t,x+30,y+56);
+  g.fillStyle="#6b5a45"; g.font="500 28px PingFang SC"; g.fillText(sub,x+30,y+100); g.restore(); }
+function overlay(t,u){ g.clearRect(0,0,W,H); const tArr=DUR*ARRIVE;
+  for(const p of PTS){ const a=p.at!==null?clamp((t-p.at)/0.4):clamp((t-tArr+0.6)/0.5); if(a<=0) continue;
+    const q=map.project(p.p); if(q.x<-100||q.x>W+100||q.y<-100||q.y>H+100) continue;
+    g.save(); g.globalAlpha=a; const r=14+3*Math.sin(t*4);
+    g.fillStyle="rgba(168,71,42,.28)"; g.beginPath(); g.arc(q.x,q.y,r*2.4,0,7); g.fill();
+    g.fillStyle="#a8472a"; g.beginPath(); g.arc(q.x,q.y,r,0,7); g.fill(); g.strokeStyle="#fff8ea"; g.lineWidth=4; g.stroke();
+    g.font="700 50px PingFang SC"; g.fillStyle="#2a2118"; g.lineWidth=10; g.strokeStyle="rgba(255,250,240,.9)"; g.lineJoin="round";
+    g.strokeText(p.n,q.x+30,q.y-16); g.fillText(p.n,q.x+30,q.y-16); g.restore(); }
+  if(LABEL[0]) card(LABEL[0],LABEL[1]||"",110,80,clamp((t-tArr+0.3)/0.5)); }
+
+// ── 契约：window.ready / window.renderAt(t) ──
+window.ready=false;
+window.renderAt=async function(t){
+  const u=clamp(t/DUR), k=ease(clamp(t/(DUR*ARRIVE)));
+  map.jumpTo(camera(k));
+  if(ROUTE.length>1){ const f=ease(clamp((u-RT0)/(RT1-RT0))); const c=partial(f);
+    map.getSource("route").setData({type:"FeatureCollection",features:c.length>1?[{type:"Feature",geometry:{type:"LineString",coordinates:c}}]:[]}); }
+  await settle(); await settle(8000);          // 第二次很短：有时 idle 先于最后一批地形瓦片
+  overlay(t,u); return true; };
+
+(async()=>{
+  let rc=parseRoute(Q.get("route"));
+  if(!rc.length && Q.get("routefile")){ try{ rc=parseRoute(await (await fetch(Q.get("routefile"))).text()); }catch(e){ console.error("routefile fetch failed (file:// 不可 fetch，请用 geomap_url.py 内联)",e); } }
+  setRoute(rc);
+  await new Promise(r=>map.once("load",r)); await settle();
+  window.ready=true;
+})();
+</script></body></html>

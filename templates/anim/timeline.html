@@ -1,0 +1,44 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#efe6d6;font-family:"PingFang SC",sans-serif}
+canvas{position:absolute;inset:0}</style></head><body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// 整屏年表：事件按顺序依次点亮；focus 年份放大强调；span=a-b 在底部量出一段年数
+// 参数：ev=年份:事件;年份:事件;…（必填）  focus=年份  span=起-止  dur=秒
+const Q=new URLSearchParams(location.search), DUR=parseFloat(Q.get("dur")||"8");
+const FOCUS=+(Q.get("focus")||0), SPAN=Q.get("span")||"";
+const g=document.getElementById("c").getContext("2d");
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const EV = Q.get("ev") ? Q.get("ev").split(";").map(x=>{const i=x.indexOf(":"); return [Number(x.slice(0,i)), x.slice(i+1)];})
+  : [[1900,"事件一"],[1925,"事件二"],[1950,"事件三"],[1975,"事件四"],[2000,"事件五"]];
+const yearStr = y => y<0 ? `公元前${-y}` : String(y);
+const XL=140, XR=1780;
+const YS=EV.map(e=>e[0]);
+const X=y=>{ // 按事件序号等距；事件之间线性插值
+  if(y<=YS[0]) return XL+60; if(y>=YS[YS.length-1]) return XR-60;
+  for(let i=0;i<YS.length-1;i++) if(y>=YS[i]&&y<=YS[i+1]) { const f=(y-YS[i])/(YS[i+1]-YS[i]); return XL+60+(XR-XL-120)*(i+f)/(YS.length-1); } };
+window.renderAt=function(t){
+  const u=clamp(t/DUR); g.fillStyle="#efe6d6"; g.fillRect(0,0,1920,1080);
+  const kNow = ease(clamp((u-0.08)/0.7))*(YS.length-1); const yNow = (function(){const i=Math.min(YS.length-2,Math.floor(kNow)), f=kNow-i; return YS[i]+(YS[i+1]-YS[i])*f;})();
+  // 轴
+  g.strokeStyle="#cdbd9f"; g.lineWidth=8; g.lineCap="round"; g.beginPath(); g.moveTo(XL,560); g.lineTo(XR,560); g.stroke();
+  g.strokeStyle="#a8472a"; g.beginPath(); g.moveTo(X(YS[0]),560); g.lineTo(X(yNow),560); g.stroke();
+  EV.forEach(([y,txt],i)=>{
+    const lit = yNow>=y-0.5, x=X(y), up=i%2===0;
+    const a = lit? 1 : 0.28;
+    g.save(); g.globalAlpha=a;
+    g.fillStyle= y===FOCUS? "#a8472a" : "#2a2118"; g.beginPath(); g.arc(x,560, y===FOCUS? 18:12,0,7); g.fill();
+    g.strokeStyle="#2a2118"; g.lineWidth=2; g.beginPath(); g.moveTo(x, up? 540:580); g.lineTo(x, up? 430:690); g.stroke();
+    g.textAlign="center"; g.fillStyle= y===FOCUS? "#a8472a":"#2a2118";
+    g.font=(y===FOCUS?"800 64px":"700 46px")+" Avenir Next"; g.fillText(yearStr(y), x, up? 410: 750);
+    g.font=(y===FOCUS?"700 38px":"500 30px")+" PingFang SC"; g.fillStyle="#4d3f30"; g.fillText(txt, x, up? 355: 800);
+    g.restore();
+  });
+  if(SPAN){ const [a,b]=SPAN.split("-").map(Number); const k=clamp((u-0.7)/0.12);
+    if(k>0){ g.save(); g.globalAlpha=k; g.strokeStyle="#a8472a"; g.lineWidth=5; const xa=X(a), xb=X(a+(b-a)*ease(k));
+      g.beginPath(); g.moveTo(xa,900); g.lineTo(xb,900); g.stroke(); g.beginPath(); g.moveTo(xa,880); g.lineTo(xa,920); g.moveTo(xb,880); g.lineTo(xb,920); g.stroke();
+      g.fillStyle="#a8472a"; g.font="800 72px PingFang SC"; g.textAlign="center"; g.fillText(`${Math.round((b-a)*ease(k))} 年`, (xa+xb)/2, 1000); g.restore(); } }
+  return true;
+};
+window.ready=true;
+</script></body></html>

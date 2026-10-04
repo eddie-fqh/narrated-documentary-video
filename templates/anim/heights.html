@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#efe6d6}canvas{position:absolute;inset:0}</style></head><body>
+<canvas id="c" width="1920" height="1080"></canvas><script>
+// 高度对比：items=名称:米数:类型(person|statue|tower|bar):副标题;…  title=  unit=米  dur=
+const Q=new URLSearchParams(location.search), DUR=parseFloat(Q.get("dur")||"8");
+const IT=(Q.get("items")||"").split(";").filter(Boolean).map(s=>{const [n,h,t,sub]=s.split(":");return {n,h:+h,t:t||"bar",sub:sub||""};});
+const TITLE=Q.get("title")||"", UNIT=Q.get("unit")||"米";
+const g=document.getElementById("c").getContext("2d");
+const clamp=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)), ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+/* 地面线以下的标签要在字幕区（y>920）之上 */ const GROUND=840, TOP=150, maxH=Math.max(...IT.map(i=>i.h))*1.08, px=(GROUND-TOP)/maxH;
+const n=IT.length, X0=420, X1=1720, step=(X1-X0)/Math.max(1,n);
+function person(x,h,a){const s=h*px; g.save(); g.globalAlpha=a; g.fillStyle="#2a2118";
+  g.beginPath(); g.arc(x,GROUND-s+s*0.07,s*0.07,0,7); g.fill();
+  g.beginPath(); g.roundRect(x-s*0.11,GROUND-s+s*0.15,s*0.22,s*0.42,s*0.05); g.fill();
+  g.fillRect(x-s*0.1,GROUND-s*0.45,s*0.08,s*0.45); g.fillRect(x+s*0.02,GROUND-s*0.45,s*0.08,s*0.45); g.restore();}
+function statue(x,h,f,a){const s=h*px*f; g.save(); g.globalAlpha=a; const grd=g.createLinearGradient(x-80,0,x+80,0);
+  grd.addColorStop(0,"#d9d2c4"); grd.addColorStop(.5,"#fbf8f1"); grd.addColorStop(1,"#cfc6b5"); g.fillStyle=grd; g.strokeStyle="#8c7a5c"; g.lineWidth=3;
+  const w=s*0.28; g.beginPath(); g.arc(x,GROUND-s+s*0.075,s*0.075,0,7); g.fill(); g.stroke();
+  g.beginPath(); g.moveTo(x-w/2,GROUND-s*0.84); g.quadraticCurveTo(x-w*0.62,GROUND-s*0.55,x-w*0.34,GROUND-s*0.46); g.lineTo(x-w*0.3,GROUND);
+  g.lineTo(x+w*0.3,GROUND); g.lineTo(x+w*0.36,GROUND-s*0.46); g.quadraticCurveTo(x+w*0.62,GROUND-s*0.55,x+w/2,GROUND-s*0.84); g.closePath(); g.fill(); g.stroke(); g.restore();}
+function bar(x,h,f,a,col){const s=h*px*f; g.save(); g.globalAlpha=a; g.fillStyle=col||"#a8472a"; g.beginPath(); g.roundRect(x-70,GROUND-s,140,s,[10,10,0,0]); g.fill(); g.restore();}
+window.renderAt=function(t){ const u=clamp(t/DUR); g.fillStyle="#efe6d6"; g.fillRect(0,0,1920,1080);
+  // 标尺
+  g.strokeStyle="#cdbd9f"; g.lineWidth=2; g.fillStyle="#8c7a5c"; g.font="500 28px Avenir Next";
+  const stepM = maxH>60?10:(maxH>12?2:1);
+  for(let m=0;m<=maxH;m+=stepM){const y=GROUND-m*px; g.globalAlpha=0.9*clamp(u*4); g.beginPath(); g.moveTo(250,y); g.lineTo(1800,y); g.setLineDash([6,10]); g.stroke(); g.setLineDash([]); g.fillText(m+" "+UNIT,150,y+10);}
+  g.globalAlpha=1; g.fillStyle="#2a2118"; g.fillRect(200,GROUND,1640,6);
+  if(TITLE){g.font="800 58px PingFang SC"; g.fillStyle="#2a2118"; g.globalAlpha=clamp(u*5); g.fillText(TITLE,150,110); g.globalAlpha=1;}
+  IT.forEach((it,i)=>{ const x=X0+step*(i+0.5), t0=0.08+i*0.16, f=ease(clamp((u-t0)/0.25)), a=clamp((u-t0)/0.08);
+    if(a<=0) return;
+    if(it.t==="person") person(x,it.h,a); else if(it.t==="statue") statue(x,it.h,f,a); else bar(x,it.h,f,a,it.t==="tower"?"#8c7a5c":"#a8472a");
+    const top=GROUND-it.h*px*(it.t==="person"?1:f);
+    g.globalAlpha=a; g.textAlign="center"; g.fillStyle="#a8472a"; g.font="800 54px Avenir Next"; g.fillText((it.h*(it.t==="person"?1:f)).toFixed(it.h<10?2:0)+" "+UNIT,x,top-24);
+    g.fillStyle="#2a2118"; g.font="700 40px PingFang SC"; g.fillText(it.n,x,GROUND+60); if(it.sub){g.font="500 28px PingFang SC"; g.fillStyle="#6b5a44"; g.fillText(it.sub,x,GROUND+100);} g.textAlign="left"; g.globalAlpha=1; });
+  return true;};
+window.ready=true;</script></body></html>

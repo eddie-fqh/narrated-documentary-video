@@ -1,0 +1,20 @@
+# 密钥与登录态：任何情况下都不进仓库
+.env
+.env.*
+*.pem
+*.key
+storage_state.json
+cookies*.txt
+# 素材与成片：体积和版权都不适合进仓库
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.flac
+*.glb
+project/
+episodes/
+# 杂项
+__pycache__/
+*.pyc
+.DS_Store
